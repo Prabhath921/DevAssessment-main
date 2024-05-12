@@ -1,0 +1,118 @@
+﻿@page "/"
+@attribute [Authorize]
+
+@using Chinook.Models
+@using Microsoft.EntityFrameworkCore
+
+<PageTitle>Index</PageTitle>
+
+<h1>Artists</h1>
+
+@if (!string.IsNullOrWhiteSpace(ErrorMessage))
+{
+    <div class="alert alert-danger fade show">
+        <div class="d-flex align-items-start">
+            <div class="flex-grow-1">
+                @ErrorMessage
+            </div>
+            <button type="button" class="btn-close" aria-label="Close" @onclick="(() => {ErrorMessage = string.Empty;})"></button>
+        </div>
+    </div>
+}
+
+@if (Artists == null)
+{
+    <Loading />
+}
+else
+{
+    <form>
+        <p>
+            Artist: <input type="text" @bind="@SearchString" placeholder="Search Artist Here.." />
+            <input type="button" value="Search" @onclick="SearchArtist" />
+        </p>
+    </form>
+
+    <table class="table table-striped table-hover table-sm">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Number of albums</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var artist in Artists)
+            {
+                <tr>
+                    <td><a href="Artist/@artist.ArtistId">@artist.Name</a></td>
+                    <td>@artist.Albums.Count()</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private List<Artist>? Artists;
+    private string? ErrorMessage;
+    public string? SearchString { get; set; }
+    [Inject] IDbContextFactory<ChinookContext> DbFactory { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await InvokeAsync(StateHasChanged);
+        Artists = await GetArtists();
+    }
+
+    private async void SearchArtist()
+    {
+        try
+        {
+            List<Artist> allArtists = await GetArtists();
+            if (!string.IsNullOrEmpty(SearchString))
+            {
+                Artists = allArtists.Where(artist => !string.IsNullOrEmpty(artist.Name) && artist.Name.Contains(SearchString)).ToList();
+            }
+            else
+            {
+                Artists = allArtists;
+            }
+        }
+        catch (Exception exception)
+        {
+            ErrorMessage = exception.Message;
+        }
+    }
+
+    public async Task<List<Artist>> GetArtists()
+    {
+        try
+        {
+            var dbContext = await DbFactory.CreateDbContextAsync();
+            var users = dbContext.Users.Include(a => a.UserPlaylists).ToList();
+            List<Artist> Artists = dbContext.Artists.ToList();
+            Artists.ForEach(async artist => artist.Albums = await GetAlbumsForArtist(artist.ArtistId));
+            return Artists;
+        }
+        catch (Exception exception)
+        {
+            ErrorMessage = exception.Message;
+            return new List<Artist>();
+        }
+
+    }
+
+    public async Task<List<Album>> GetAlbumsForArtist(long artistId)
+    {
+        try
+        {
+            var dbContext = await DbFactory.CreateDbContextAsync();
+            return dbContext.Albums.Where(a => a.ArtistId == artistId).ToList();
+        }
+        catch (Exception exception)
+        {
+            ErrorMessage = exception.Message;
+            return new List<Album>();
+        }
+    }
+}

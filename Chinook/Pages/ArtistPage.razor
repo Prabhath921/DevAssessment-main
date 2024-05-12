@@ -1,0 +1,304 @@
+﻿@page "/artist/{ArtistId:long}"
+@attribute [Authorize]
+
+@using Chinook.Models
+@using Chinook.ClientModels
+@using Microsoft.EntityFrameworkCore
+@using System.Security.Claims;
+
+@if (!string.IsNullOrWhiteSpace(InfoMessage))
+{
+    <div class="alert alert-info fade show">
+        <div class="d-flex align-items-start">
+            <div class="flex-grow-1">
+                @InfoMessage
+            </div>
+            <button type="button" class="btn-close" aria-label="Close" @onclick="CloseInfoMessage"></button>
+        </div>
+    </div>
+}
+
+@if (!string.IsNullOrWhiteSpace(ErrorMessage))
+{
+    <div class="alert alert-danger fade show">
+        <div class="d-flex align-items-start">
+            <div class="flex-grow-1">
+                @ErrorMessage
+            </div>
+            <button type="button" class="btn-close" aria-label="Close" @onclick="(() => {ErrorMessage = string.Empty;})"></button>
+        </div>
+    </div>
+}
+
+@if (Artist == null)
+{
+    <Loading />
+}
+else
+{
+    <h1>@Artist.Name</h1>
+    <table class="table table-striped table-hover table-sm">
+        <thead>
+            <tr>
+                <th>Album title</th>
+                <th>Track name</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var track in Tracks)
+            {
+                <tr>
+                    <td>@track.AlbumTitle</td>
+                    <td>@track.TrackName</td>
+                    <td>
+                        @if (track.IsFavorite)
+                        {
+                            <a href="#" class="m-1" title="Unmark as favorite" @onclick="@(() => UnfavoriteTrack(track.TrackId))" @onclick:preventDefault><i class="bi bi-star-fill"></i></a>
+                        }
+                        else
+                        {
+                            <a href="#" class="m-1" title="Mark as favorite" @onclick="@(() => FavoriteTrack(track.TrackId))" @onclick:preventDefault><i class="bi bi-star"></i></a>
+                        }
+                        <a href="#" class="m-1" title="Add to playlist" @onclick="@(() => OpenPlaylistDialog(track.TrackId))" @onclick:preventDefault><i class="bi bi-file-earmark-plus"></i></a>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+<Modal @ref="PlaylistDialog">
+    <Title>Add to playlist</Title>
+    <Body>
+        @if (SelectedTrack != null)
+        {
+            <div class="form-group mb-2">
+                <label>@Artist.Name - @SelectedTrack.AlbumTitle - @SelectedTrack.TrackName</label>
+            </div>
+        }
+
+        <div class="mb-2">
+            <label for="ExistingPlaylist">Add to existing playlist</label>
+            <select class="form-control" disabled="@(!string.IsNullOrEmpty(PlayListName))" @bind="SelectedPlayListId" id=" ExistingPlaylist">
+                <option value="-1" disabled selected>Select a PlayList</option>
+                @if (Playlists != null)
+                {
+                    @foreach (var playlist in Playlists)
+                    {
+                        <option value="@playlist.PlaylistId">@playlist.Name</option>
+                    }
+                }
+            </select>
+        </div>
+        <div class="mb-2">
+            <label for="NewPlaylist">Create new playlist</label>
+            <input type="text" id="NewPlaylist" class="form-control" @oninput="(() => { if (string.IsNullOrEmpty(PlayListName)) { SelectedPlayListId = -1; }})" @bind="PlayListName" placeholder="Name for the new playlist">
+        </div>
+    </Body>
+    <Footer>
+        <button class="btn btn-success" @onclick="AddTrackToPlaylist">Save</button>
+    </Footer>
+</Modal>
+
+@code {
+    [Parameter] public long ArtistId { get; set; }
+    [CascadingParameter] private Task<AuthenticationState> authenticationState { get; set; }
+    [Inject] IDbContextFactory<ChinookContext> DbFactory { get; set; }
+    private Modal PlaylistDialog { get; set; }
+
+    private Artist? Artist;
+    private List<PlaylistTrack> Tracks;
+    private List<Models.Playlist> Playlists;
+    private PlaylistTrack? SelectedTrack;
+    private string InfoMessage;
+    private string CurrentUserId;
+    private long SelectedPlayListId = -1;
+    private string? PlayListName;
+    private string? ErrorMessage;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            await InvokeAsync(StateHasChanged);
+            CurrentUserId = await GetUserId();
+            var DbContext = await DbFactory.CreateDbContextAsync();
+
+            Artist = DbContext.Artists.SingleOrDefault(a => a.ArtistId == ArtistId);
+            Tracks = DbContext.Tracks.Where(a => a.Album.ArtistId == ArtistId)
+                .Include(a => a.Album)
+                .Select(t => new PlaylistTrack()
+                    {
+                        AlbumTitle = (t.Album == null ? "-" : t.Album.Title),
+                        TrackId = t.TrackId,
+                        TrackName = t.Name,
+                        IsFavorite = t.Playlists.Where(p => p.UserPlaylists.Any(up => up.UserId == CurrentUserId && up.Playlist.Name == "Favorites")).Any()
+                    })
+                .ToList();
+        }
+        catch (Exception exception)
+        {
+            ErrorMessage = exception.Message;
+        }
+    }
+
+    private async Task<string> GetUserId()
+    {
+        try
+        {
+            var user = (await authenticationState).User;
+            string userId = user.FindFirst(u => u.Type.Contains(ClaimTypes.NameIdentifier))?.Value;
+            return userId;
+        }
+        catch (Exception exception)
+        {
+            ErrorMessage = exception.Message;
+            return string.Empty;
+        }
+    }
+
+    private async Task FavoriteTrack(long trackId)
+    {
+        try
+        {
+            var track = Tracks.FirstOrDefault(t => t.TrackId == trackId);
+            var DbContext = await DbFactory.CreateDbContextAsync();
+
+            Models.Playlist? FavoritePlayList = DbContext.Playlists.Where(p => p.UserPlaylists.Any(up => up.UserId == CurrentUserId && up.Playlist.Name == "Favorites")).FirstOrDefault();
+            if (FavoritePlayList == null)
+            {
+                await DbContext.UserPlaylists.AddAsync(
+                    new UserPlaylist()
+                        {
+                            User = await DbContext.Users.SingleOrDefaultAsync(user => user.Id == CurrentUserId),
+                            Playlist = new Models.Playlist()
+                            {
+                                PlaylistId = 0,
+                                Name = "Favorites",
+                                Tracks = new List<Track>()
+                                {
+                                    await DbContext.Tracks.SingleOrDefaultAsync(track => track.TrackId == trackId)
+                                }
+                            }
+                        }
+                );
+            }
+            else
+            {
+                FavoritePlayList.Tracks.Add(await DbContext.Tracks.SingleOrDefaultAsync(track => track.TrackId == trackId));
+            }
+
+            DbContext.SaveChanges();
+            Tracks.Where(track => track.TrackId == trackId).SingleOrDefault(track => track.IsFavorite = true);
+            InfoMessage = $"Track {track.ArtistName} - {track.AlbumTitle} - {track.TrackName} added to playlist Favorites.";
+        }
+        catch (Exception exception)
+        {
+            ErrorMessage = exception.Message;
+        }
+    }
+
+    private async Task UnfavoriteTrack(long trackId)
+    {
+        try
+        {
+            var track = Tracks.FirstOrDefault(t => t.TrackId == trackId);
+            var DbContext = await DbFactory.CreateDbContextAsync();
+            Models.Playlist? FavoritePlayList = DbContext.Playlists.Include(paylist => paylist.Tracks).Where(p => p.UserPlaylists.Any(up => up.UserId == CurrentUserId && up.Playlist.Name == "Favorites")).FirstOrDefault();
+            FavoritePlayList.Tracks.Remove(await DbContext.Tracks.SingleOrDefaultAsync(track => track.TrackId == trackId));
+            DbContext.SaveChanges();
+            Tracks.Where(track => track.TrackId == trackId).SingleOrDefault(track => track.IsFavorite = false);
+            InfoMessage = $"Track {track.ArtistName} - {track.AlbumTitle} - {track.TrackName} removed from playlist Favorites.";
+        }
+        catch (Exception exception)
+        {
+            ErrorMessage = exception.Message;
+        }
+    }
+
+    private async Task OpenPlaylistDialog(long trackId)
+    {
+        try
+        {
+            CloseInfoMessage();
+            SelectedTrack = Tracks.FirstOrDefault(t => t.TrackId == trackId);
+            var DbContext = await DbFactory.CreateDbContextAsync();
+            Playlists = DbContext.Playlists.Where(p => p.UserPlaylists.Any(up => up.UserId == CurrentUserId)).ToList();
+            PlaylistDialog.Open();
+        }
+        catch (Exception exception)
+        {
+            ErrorMessage = exception.Message;
+        }
+    }
+
+    private async Task AddTrackToPlaylist()
+    {
+        try
+        {
+            CloseInfoMessage();
+            var DbContext = await DbFactory.CreateDbContextAsync();
+            bool isInPlayList = false;
+            Models.Playlist? PlayList;
+            if (SelectedPlayListId == -1)
+            {
+                PlayList = DbContext.Playlists.Include(paylist => paylist.Tracks).Where(p => p.UserPlaylists.Any(up => up.UserId == CurrentUserId && up.Playlist.Name == PlayListName)).FirstOrDefault();
+            }
+            else
+            {
+                PlayList = DbContext.Playlists.Include(paylist => paylist.Tracks).Where(p => p.UserPlaylists.Any(up => up.UserId == CurrentUserId && up.Playlist.PlaylistId == SelectedPlayListId)).FirstOrDefault();
+            }
+            if (PlayList == null)
+            {
+                long SelectedPlayListId = (DbContext.Playlists?.Max(playlist => playlist.PlaylistId) ?? 0) + 1;
+                await DbContext.UserPlaylists.AddAsync(
+                    new UserPlaylist()
+                        {
+                            User = await DbContext.Users.SingleOrDefaultAsync(user => user.Id == CurrentUserId),
+                            Playlist = new Models.Playlist()
+                            {
+                                PlaylistId = SelectedPlayListId,
+                                Name = PlayListName,
+                                Tracks = new List<Track>()
+                                {
+                                    await DbContext.Tracks.SingleOrDefaultAsync(track => track.TrackId == SelectedTrack.TrackId)
+                                }
+                            }
+                        }
+                );
+            }
+            else
+            {
+                PlayListName = PlayList.Name;
+                if (!PlayList.Tracks.Any(track => track.TrackId == SelectedTrack.TrackId))
+                {
+                    PlayList.Tracks.Add(await DbContext.Tracks.SingleOrDefaultAsync(track => track.TrackId == SelectedTrack.TrackId));
+                }
+                else
+                    isInPlayList = true;
+            }
+
+            DbContext.SaveChanges();
+            if (isInPlayList)
+            {
+                InfoMessage = $"Track {Artist.Name} - {SelectedTrack.AlbumTitle} - {SelectedTrack.TrackName} already in playlist {PlayListName}.";
+            }
+            else
+            {
+                InfoMessage = $"Track {Artist.Name} - {SelectedTrack.AlbumTitle} - {SelectedTrack.TrackName} added to playlist {PlayListName}.";
+            }
+            PlayListName = string.Empty;
+        }
+        catch (Exception exception)
+        {
+            ErrorMessage = exception.Message;
+        }
+        PlaylistDialog.Close();
+    }
+
+    private void CloseInfoMessage()
+    {
+        InfoMessage = "";
+    }
+}
