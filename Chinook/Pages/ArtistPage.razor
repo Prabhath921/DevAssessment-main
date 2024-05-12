@@ -2,8 +2,8 @@
 @attribute [Authorize]
 
 @using Chinook.Models
+@using Chinook.Services
 @using Chinook.ClientModels
-@using Microsoft.EntityFrameworkCore
 @using System.Security.Claims;
 
 @if (!string.IsNullOrWhiteSpace(InfoMessage))
@@ -104,7 +104,7 @@ else
 @code {
     [Parameter] public long ArtistId { get; set; }
     [CascadingParameter] private Task<AuthenticationState> authenticationState { get; set; }
-    [Inject] IDbContextFactory<ChinookContext> DbFactory { get; set; }
+    [Inject] IArtistService ArtistService { get; set; }
     private Modal PlaylistDialog { get; set; }
 
     private Artist? Artist;
@@ -123,19 +123,8 @@ else
         {
             await InvokeAsync(StateHasChanged);
             CurrentUserId = await GetUserId();
-            var DbContext = await DbFactory.CreateDbContextAsync();
-
-            Artist = DbContext.Artists.SingleOrDefault(a => a.ArtistId == ArtistId);
-            Tracks = DbContext.Tracks.Where(a => a.Album.ArtistId == ArtistId)
-                .Include(a => a.Album)
-                .Select(t => new PlaylistTrack()
-                    {
-                        AlbumTitle = (t.Album == null ? "-" : t.Album.Title),
-                        TrackId = t.TrackId,
-                        TrackName = t.Name,
-                        IsFavorite = t.Playlists.Where(p => p.UserPlaylists.Any(up => up.UserId == CurrentUserId && up.Playlist.Name == "Favorites")).Any()
-                    })
-                .ToList();
+            Artist = await ArtistService.GetArtistByIdAsync(ArtistId);
+            Tracks = await ArtistService.GetTracksByArtistIdAsync(ArtistId, CurrentUserId);
         }
         catch (Exception exception)
         {
@@ -163,33 +152,7 @@ else
         try
         {
             var track = Tracks.FirstOrDefault(t => t.TrackId == trackId);
-            var DbContext = await DbFactory.CreateDbContextAsync();
-
-            Models.Playlist? FavoritePlayList = DbContext.Playlists.Where(p => p.UserPlaylists.Any(up => up.UserId == CurrentUserId && up.Playlist.Name == "Favorites")).FirstOrDefault();
-            if (FavoritePlayList == null)
-            {
-                await DbContext.UserPlaylists.AddAsync(
-                    new UserPlaylist()
-                        {
-                            User = await DbContext.Users.SingleOrDefaultAsync(user => user.Id == CurrentUserId),
-                            Playlist = new Models.Playlist()
-                            {
-                                PlaylistId = 0,
-                                Name = "Favorites",
-                                Tracks = new List<Track>()
-                                {
-                                    await DbContext.Tracks.SingleOrDefaultAsync(track => track.TrackId == trackId)
-                                }
-                            }
-                        }
-                );
-            }
-            else
-            {
-                FavoritePlayList.Tracks.Add(await DbContext.Tracks.SingleOrDefaultAsync(track => track.TrackId == trackId));
-            }
-
-            DbContext.SaveChanges();
+            await ArtistService.AddFavoriteTrackAsync(trackId, CurrentUserId);
             Tracks.Where(track => track.TrackId == trackId).SingleOrDefault(track => track.IsFavorite = true);
             InfoMessage = $"Track {track.ArtistName} - {track.AlbumTitle} - {track.TrackName} added to playlist Favorites.";
         }
@@ -204,10 +167,7 @@ else
         try
         {
             var track = Tracks.FirstOrDefault(t => t.TrackId == trackId);
-            var DbContext = await DbFactory.CreateDbContextAsync();
-            Models.Playlist? FavoritePlayList = DbContext.Playlists.Include(paylist => paylist.Tracks).Where(p => p.UserPlaylists.Any(up => up.UserId == CurrentUserId && up.Playlist.Name == "Favorites")).FirstOrDefault();
-            FavoritePlayList.Tracks.Remove(await DbContext.Tracks.SingleOrDefaultAsync(track => track.TrackId == trackId));
-            DbContext.SaveChanges();
+            await ArtistService.RemoveFavoriteTrackAsync(trackId, CurrentUserId);
             Tracks.Where(track => track.TrackId == trackId).SingleOrDefault(track => track.IsFavorite = false);
             InfoMessage = $"Track {track.ArtistName} - {track.AlbumTitle} - {track.TrackName} removed from playlist Favorites.";
         }
@@ -223,8 +183,7 @@ else
         {
             CloseInfoMessage();
             SelectedTrack = Tracks.FirstOrDefault(t => t.TrackId == trackId);
-            var DbContext = await DbFactory.CreateDbContextAsync();
-            Playlists = DbContext.Playlists.Where(p => p.UserPlaylists.Any(up => up.UserId == CurrentUserId)).ToList();
+            Playlists = await ArtistService.GetUserPlayListsAsync(CurrentUserId);
             PlaylistDialog.Open();
         }
         catch (Exception exception)
@@ -238,48 +197,11 @@ else
         try
         {
             CloseInfoMessage();
-            var DbContext = await DbFactory.CreateDbContextAsync();
-            bool isInPlayList = false;
-            Models.Playlist? PlayList;
-            if (SelectedPlayListId == -1)
+            bool isInPlayList = await ArtistService.AddTrackToPlaylistAsync(SelectedPlayListId, CurrentUserId, PlayListName, SelectedTrack.TrackId);
+            if (string.IsNullOrEmpty(PlayListName))
             {
-                PlayList = DbContext.Playlists.Include(paylist => paylist.Tracks).Where(p => p.UserPlaylists.Any(up => up.UserId == CurrentUserId && up.Playlist.Name == PlayListName)).FirstOrDefault();
+                PlayListName = Playlists.Where((playlist) => playlist.PlaylistId == SelectedPlayListId).FirstOrDefault().Name;
             }
-            else
-            {
-                PlayList = DbContext.Playlists.Include(paylist => paylist.Tracks).Where(p => p.UserPlaylists.Any(up => up.UserId == CurrentUserId && up.Playlist.PlaylistId == SelectedPlayListId)).FirstOrDefault();
-            }
-            if (PlayList == null)
-            {
-                long SelectedPlayListId = (DbContext.Playlists?.Max(playlist => playlist.PlaylistId) ?? 0) + 1;
-                await DbContext.UserPlaylists.AddAsync(
-                    new UserPlaylist()
-                        {
-                            User = await DbContext.Users.SingleOrDefaultAsync(user => user.Id == CurrentUserId),
-                            Playlist = new Models.Playlist()
-                            {
-                                PlaylistId = SelectedPlayListId,
-                                Name = PlayListName,
-                                Tracks = new List<Track>()
-                                {
-                                    await DbContext.Tracks.SingleOrDefaultAsync(track => track.TrackId == SelectedTrack.TrackId)
-                                }
-                            }
-                        }
-                );
-            }
-            else
-            {
-                PlayListName = PlayList.Name;
-                if (!PlayList.Tracks.Any(track => track.TrackId == SelectedTrack.TrackId))
-                {
-                    PlayList.Tracks.Add(await DbContext.Tracks.SingleOrDefaultAsync(track => track.TrackId == SelectedTrack.TrackId));
-                }
-                else
-                    isInPlayList = true;
-            }
-
-            DbContext.SaveChanges();
             if (isInPlayList)
             {
                 InfoMessage = $"Track {Artist.Name} - {SelectedTrack.AlbumTitle} - {SelectedTrack.TrackName} already in playlist {PlayListName}.";

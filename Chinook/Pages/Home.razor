@@ -2,7 +2,7 @@
 @attribute [Authorize]
 
 @using Chinook.Models
-@using Microsoft.EntityFrameworkCore
+@using Chinook.Services
 
 <PageTitle>Index</PageTitle>
 
@@ -56,19 +56,19 @@ else
     private List<Artist>? Artists;
     private string? ErrorMessage;
     public string? SearchString { get; set; }
-    [Inject] IDbContextFactory<ChinookContext> DbFactory { get; set; }
+    [Inject] IHomeService HomeService { get; set; }
 
     protected override async Task OnInitializedAsync()
     {
         await InvokeAsync(StateHasChanged);
-        Artists = await GetArtists();
+        Artists = await HomeService.GetArtistsAsync();
     }
 
     private async void SearchArtist()
     {
         try
         {
-            List<Artist> allArtists = await GetArtists();
+            List<Artist> allArtists = await HomeService.GetArtistsAsync();
             if (!string.IsNullOrEmpty(SearchString))
             {
                 Artists = allArtists.Where(artist => !string.IsNullOrEmpty(artist.Name) && artist.Name.Contains(SearchString)).ToList();
@@ -81,38 +81,6 @@ else
         catch (Exception exception)
         {
             ErrorMessage = exception.Message;
-        }
-    }
-
-    public async Task<List<Artist>> GetArtists()
-    {
-        try
-        {
-            var dbContext = await DbFactory.CreateDbContextAsync();
-            var users = dbContext.Users.Include(a => a.UserPlaylists).ToList();
-            List<Artist> Artists = dbContext.Artists.ToList();
-            Artists.ForEach(async artist => artist.Albums = await GetAlbumsForArtist(artist.ArtistId));
-            return Artists;
-        }
-        catch (Exception exception)
-        {
-            ErrorMessage = exception.Message;
-            return new List<Artist>();
-        }
-
-    }
-
-    public async Task<List<Album>> GetAlbumsForArtist(long artistId)
-    {
-        try
-        {
-            var dbContext = await DbFactory.CreateDbContextAsync();
-            return dbContext.Albums.Where(a => a.ArtistId == artistId).ToList();
-        }
-        catch (Exception exception)
-        {
-            ErrorMessage = exception.Message;
-            return new List<Album>();
         }
     }
 }

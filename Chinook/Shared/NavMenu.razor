@@ -1,4 +1,12 @@
-﻿<div class="top-row ps-3 navbar navbar-dark">
+﻿@attribute [Authorize]
+@implements IDisposable;
+@inject INavigationService NavigationService;
+
+@using Chinook.Models;
+@using Chinook.Services;
+@using System.Security.Claims;
+
+<div class="top-row ps-3 navbar navbar-dark">
     <div class="container-fluid">
         <a class="navbar-brand" href="">Chinook</a>
         <button title="Navigation menu" class="navbar-toggler" @onclick="ToggleNavMenu">
@@ -15,23 +23,58 @@
             </NavLink>
         </div>
         <div class="nav-item px-3">
-@* 
-            <NavLink class="nav-link" href="playlist/playlistnumber">
-                <i class="bi bi-music-note-list me-3" style="font-size: 1.25em"></i>My favorite tracks
-            </NavLink>
-*@
-</div>
+            @if (Playlists != null)
+            {
+                @foreach (var playlist in Playlists)
+                {
+                    <NavLink class="nav-link" href="@($"playlist/{playlist.PlaylistId}")">
+                        <i class="bi bi-music-note-list me-3" style="font-size: 1.25em"></i> @playlist.Name
+                    </NavLink>
+                }
+            }
+        </div>
 
     </nav>
 </div>
 
 @code {
     private bool collapseNavMenu = true;
+    private List<Playlist> Playlists;
+    [CascadingParameter] private Task<AuthenticationState> authenticationState { get; set; }
 
     private string? NavMenuCssClass => collapseNavMenu ? "collapse" : null;
+
+    protected override async Task OnInitializedAsync()
+    {
+        string CurrentUserId = await GetUserId();
+        await InvokeAsync(StateHasChanged);
+        NavigationService.PlaylistChanged += PlaylistChanged;
+        Playlists = await NavigationService.GetUserPlayListsAsync(CurrentUserId);
+
+    }
+
+    private async Task<string> GetUserId()
+    {
+
+        var user = (await authenticationState).User;
+        string userId = user.FindFirst(u => u.Type.Contains(ClaimTypes.NameIdentifier))?.Value;
+        return userId;
+
+    }
 
     private void ToggleNavMenu()
     {
         collapseNavMenu = !collapseNavMenu;
+    }
+
+    public void Dispose()
+    {
+        NavigationService.PlaylistChanged -= PlaylistChanged;
+    }
+
+    private void PlaylistChanged(object? sender, EventArgs e)
+    {
+        Playlists = NavigationService.GetUserPlayLists();
+        InvokeAsync(StateHasChanged);
     }
 }
